@@ -1,0 +1,37 @@
+[
+  {
+    "id": "e1",
+    "from": "Jordan Pierce <jpierce@acmedev.com>",
+    "customer_key": "acme",
+    "subject": "Concrete special inspection - Acme Tower, 500 5th Ave",
+    "body": "Hi, we're breaking ground next month on Acme Tower, a 42-story mixed-use at 500 5th Ave, Manhattan. We need concrete testing and special inspection for the cast-in-place work, probably around 40 hours plus site visits. Can you send a proposal? DOB job number is M00421338."
+  },
+  {
+    "id": "e2",
+    "from": "Lena Ortiz <lena@hudsonyb.com>",
+    "customer_key": "hudson",
+    "subject": "Need structural steel inspection scheduled",
+    "body": "Our steel erection at 20 Hudson Yards starts Monday. We need a special inspector on site for the welding and bolting inspection, Manhattan. Please schedule someone and confirm the time. Roughly 3 weeks of intermittent visits."
+  },
+  {
+    "id": "e3",
+    "from": "Sam Whitaker <sam@brightlinegc.com>",
+    "customer_key": "brightline",
+    "subject": "Payment sent for invoice INV-2026-0298",
+    "body": "Hi team, we just sent ACH payment for invoice INV-2026-0298 ($4,200). Please confirm receipt and update your records. Thanks!"
+  },
+  {
+    "id": "e4",
+    "from": "Jordan Pierce <jpierce@acmedev.com>",
+    "customer_key": "acme",
+    "subject": "TR1 needed for Acme Tower filing",
+    "body": "Our expediter needs the TR1 technical report for the special inspections on Acme Tower (DOB job M00421338, Block 841 Lot 29, BIN 1084221) so we can file with DOB. Concrete, firestopping, and structural steel inspections. Can you prepare it?"
+  },
+  {
+    "id": "e5",
+    "from": "Dana Rivera <dana@rivera-arch.com>",
+    "customer_key": null,
+    "subject": "Question about structural observation",
+    "body": "Quick question - does your firm provide structural observation site visits by the engineer of record? What's the typical cost per visit? We have a small townhouse renovation in Brooklyn."
+  }
+]
