@@ -9,6 +9,12 @@ import os
 
 import streamlit as st
 
+try:                                  # load GROQ_API_KEY (and other secrets) from a local .env if present
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 from patcy import ops, store
 from patcy.config import COMPANY, STAFF
 from patcy.pricing import money
@@ -171,6 +177,33 @@ if st.session_state.get("ran"):
             st.info("No tasks.")
         for t in tasks:
             st.checkbox(f"{t['task']}  ·  _{t['owner'] or 'Unassigned'}_", key=t["ref"])
+
+# ---- Ask Patcy: the conversational layer (Groq) ----
+st.divider()
+st.subheader("💬 Ask Patcy")
+from patcy import assistant, llm  # noqa: E402
+if llm.available():
+    st.caption("Ask about your operations, priorities, or ask Patcy to draft something. "
+               "Patcy reasons and drafts — it never sends or moves money without your approval.")
+else:
+    st.caption("⚠ No `GROQ_API_KEY` set yet — Patcy will answer from the current state, but add the "
+               "key (Settings/secrets) to turn on full conversation.")
+
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+for role, msg in st.session_state.chat:
+    with st.chat_message(role):
+        st.markdown(msg)
+_prompt = st.chat_input("Ask Patcy… e.g. “what needs my approval and why?”")
+if _prompt:
+    st.session_state.chat.append(("user", _prompt))
+    with st.chat_message("user"):
+        st.markdown(_prompt)
+    with st.chat_message("assistant"):
+        with st.spinner("Patcy is thinking…"):
+            _ans = assistant.reply(st.session_state.chat, store.load())
+        st.markdown(_ans)
+    st.session_state.chat.append(("assistant", _ans))
 
 # ---- sidebar: the team + the honest scope ----
 with st.sidebar:

@@ -1,6 +1,7 @@
 streamlit>=1.36
 reportlab>=4.0
 python-dotenv>=1.0
+groq>=0.11
 # Optional — the conversational LangChain agent (patcy/assistant.py). The core Ops Console does
 # NOT need these, so they're left out of the deploy build for speed/reliability. Uncomment to
 # enable the LangChain assistant locally:

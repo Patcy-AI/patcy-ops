@@ -1,0 +1,11 @@
+# Keep the container image small and clean — don't ship local cruft or secrets into it.
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git
+.gitignore
+.env
+.streamlit/secrets.toml
+out/*.pdf
+patcy_db.json
