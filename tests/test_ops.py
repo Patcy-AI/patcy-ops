@@ -43,12 +43,50 @@ def test_full_pipeline_produces_artifacts():
     assert any(r["category"] == "inspection_request" for r in results)
 
 
-def test_payment_marks_invoice_paid():
+def test_payment_is_gated_then_applied_on_approval():
+    """Guardrail: a payment is HELD for a human, not auto-applied (excessive-agency fix),
+    and only executes after explicit approval."""
     db = store.seed_demo()
     ops.run_inbox(db, _inbox())
     db = store.load()
     inv = next(i for i in db["invoices"] if i["ref"] == "INV-2026-0298")
-    assert inv["status"] == "paid"
+    assert inv["status"] == "sent"                     # NOT auto-paid
+    apr = next(a for a in db["approvals"]
+               if a["kind"] == "payment" and a["payload"]["invoice_ref"] == "INV-2026-0298")
+    assert apr["status"] == "pending" and apr["risk"] == "high"
+    ops.apply_approval(db, apr["ref"], "approve")      # human approves
+    db = store.load()
+    inv = next(i for i in db["invoices"] if i["ref"] == "INV-2026-0298")
+    assert inv["status"] == "paid"                     # applied only after approval
+
+
+def test_high_risk_actions_are_gated():
+    """Money movement and DOB filings are both held in the approval queue."""
+    db = store.seed_demo()
+    results = ops.run_inbox(db, _inbox())
+    kinds = {a["kind"] for r in results for a in r.get("approvals", [])}
+    assert "payment" in kinds and "dob_filing" in kinds
+
+
+def test_injection_detected_and_contained():
+    """Untrusted-inbox defense: a poisoned email is flagged and its embedded 'mark all paid /
+    wire funds' instruction is never executed."""
+    db = store.seed_demo()
+    results = ops.run_inbox(db, _inbox())
+    poisoned = next(r for r in results if r["email_id"] == "e6")
+    assert poisoned["security"]["flagged"] is True
+    db = store.load()
+    assert all(i["status"] != "paid" for i in db["invoices"])      # nothing auto-paid
+    assert all(a["status"] == "pending" for a in db["approvals"])  # nothing auto-approved
+
+
+def test_legit_emails_not_falsely_flagged():
+    """The injection scanner must not false-positive on ordinary construction email."""
+    db = store.seed_demo()
+    results = ops.run_inbox(db, _inbox())
+    for r in results:
+        if r["email_id"] in ("e1", "e2", "e3", "e4", "e5"):
+            assert r["security"]["flagged"] is False
 
 
 def test_inspector_assignment_matches_cert():

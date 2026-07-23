@@ -11,10 +11,56 @@ import datetime as _dt
 import re
 import urllib.parse
 
-from . import store
+from . import guardrails, store
 from .config import COMPANY, CUSTOMERS, STAFF, find_service
 from .documents import generate_invoice, generate_proposal, generate_tr1
 from .pricing import build_quote, money
+
+
+def _queue_approval(db, result, kind, title, payload, cust, amount=None, security=None):
+    """Hold a high-risk action for a human instead of executing it (excessive-agency guardrail).
+    Creates a pending approval record, attaches the guardrail's reason/control/frameworks, and
+    carries any injection flag from the source email so the reviewer sees it."""
+    g = guardrails.gate(kind)
+    ref = store.next_ref(db, "APR")
+    sec = security or {"flagged": False, "note": ""}
+    apr = {"ref": ref, "kind": kind, "title": title, "payload": payload, "status": "pending",
+           "risk": g["risk"], "reason": g["reason"], "control": g["control"],
+           "frameworks": g["frameworks"], "customer": (cust or {}).get("name", ""),
+           "amount": amount, "flagged": sec.get("flagged", False), "flag_note": sec.get("note", "")}
+    store.add(db, "approvals", apr)
+    result.setdefault("approvals", []).append(apr)
+    return apr
+
+
+def apply_approval(db, ref, decision):
+    """Execute (or reject) a held action AFTER a human decides. This is the only path by which a
+    high-risk action actually happens. Returns the updated approval."""
+    apr = next((a for a in db.get("approvals", []) if a["ref"] == ref), None)
+    if not apr or apr["status"] != "pending":
+        return apr
+    if decision != "approve":
+        apr["status"] = "rejected"
+        store.log(db, "Guardrail", f"{apr['title']} — REJECTED by human reviewer; action not taken.")
+        store.save(db)
+        return apr
+    # Approved: perform the real action now.
+    if apr["kind"] == "payment":
+        inv_ref = apr["payload"].get("invoice_ref")
+        for inv in db["invoices"]:
+            if inv["ref"] == inv_ref:
+                inv["status"] = "paid"
+        store.log(db, "Payment", f"{inv_ref} marked PAID after human approval ({apr['ref']}).")
+    elif apr["kind"] == "dob_filing":
+        store.log(db, "DOB/Forms", f"TR1 {apr['payload'].get('tr1_ref')} filed with DOB after PE sign-off ({apr['ref']}).")
+    elif apr["kind"] == "proposal_send":
+        for pro in db["proposals"]:
+            if pro["ref"] == apr["payload"].get("proposal_ref"):
+                pro["status"] = "sent"
+        store.log(db, "Proposal", f"Proposal {apr['payload'].get('proposal_ref')} sent after approval ({apr['ref']}).")
+    apr["status"] = "approved"
+    store.save(db)
+    return apr
 
 SERVICE_CERT = {"SI-CONC": "Concrete", "SI-STRUCT": "Structural Steel", "SO-OBS": "Structural Observation",
                 "FP-INSP": "Firestopping", "ENG-SVC": "TR1"}
@@ -124,6 +170,13 @@ def process_email(db, email, today=None):
 
     act("Intake", f"Classified email from {cust['name']} as '{info['category']}'.")
 
+    # SECURITY: the inbox is untrusted input. Scan for prompt injection / authority escalation.
+    sec = guardrails.scan_inbox(email)
+    result["security"] = sec
+    if sec["flagged"]:
+        act("Security", "⚠ Prompt-injection / authority-escalation detected in this email. "
+                        "Content treated as DATA — no embedded instruction executed; routed to human review.")
+
     if info["category"] == "proposal_request":
         q = build_quote(info["sku"], info["hours"], add_mobilization=max(2, info["hours"] // 8))
         ref = store.next_ref(db, "PRO")
@@ -132,8 +185,15 @@ def process_email(db, email, today=None):
                                     "status": "sent", "expires": (today + _dt.timedelta(
                                         days=COMPANY["proposal_valid_days"])).isoformat(), "project": proj["name"]})
         act("Proposal", f"Generated {q['template']} {ref} for {cust['name']} — {money(q['total'])}.")
-        act("Proposal", f"Drafted client email to {cust['email']} with the proposal attached.")
-        task("Proposal", f"Send proposal {ref} to {cust['email']} and log follow-up", "Ops")
+        if guardrails.needs_send_approval(q["total"]):
+            apr = _queue_approval(db, result, "proposal_send",
+                                  f"Send proposal {ref} to {cust['name']} ({money(q['total'])})",
+                                  {"proposal_ref": ref}, cust, amount=q["total"], security=sec)
+            act("Proposal", f"Value is at/above the {money(guardrails.SPEND_APPROVAL_THRESHOLD)} spend "
+                            f"limit — send HELD for human approval ({apr['ref']}).")
+        else:
+            act("Proposal", f"Drafted client email to {cust['email']} with the proposal attached.")
+            task("Proposal", f"Send proposal {ref} to {cust['email']} and log follow-up", "Ops")
         result["artifacts"].append({"kind": "Proposal", "ref": ref, "path": path, "amount": q["total"]})
 
     elif info["category"] == "inspection_request":
@@ -150,17 +210,20 @@ def process_email(db, email, today=None):
         result["artifacts"].append({"kind": "Calendar", "ref": date, "link": link})
 
     elif info["category"] == "payment":
-        inv_ref = (re.search(r"INV-\d{4}-\d{4}", email["body"]) or [None])
-        inv_ref = inv_ref.group(0) if hasattr(inv_ref, "group") else None
+        m = re.search(r"INV-\d{4}-\d{4}", email["body"])
+        inv_ref = m.group(0) if m else None
         act("Payment", f"Detected payment notification for {inv_ref or 'an invoice'} from {cust['name']}.")
-        marked = False
-        for inv in db["invoices"]:
-            if inv["ref"] == inv_ref:
-                inv["status"] = "paid"
-                marked = True
-        act("Payment", f"Marked {inv_ref} as PAID and updated project status." if marked
-            else f"No matching invoice on file for {inv_ref}; flagged accounting to verify in QuickBooks.")
-        task("Payment", f"Verify {inv_ref or 'payment'} cleared in QuickBooks and email receipt", "Accounting")
+        inv = next((i for i in db["invoices"] if i["ref"] == inv_ref), None)
+        if inv:
+            apr = _queue_approval(db, result, "payment", f"Mark {inv_ref} as PAID",
+                                  {"invoice_ref": inv_ref}, cust, amount=inv["amount"], security=sec)
+            act("Payment", f"HELD for human approval before applying — money movement is never "
+                           f"auto-executed ({apr['ref']}).")
+            task("Payment", f"Approve payment {inv_ref} and reconcile in QuickBooks", "Accounting")
+        else:
+            act("Payment", f"No matching invoice on file for {inv_ref or 'this notice'}; flagged "
+                           f"accounting to verify in QuickBooks. Nothing auto-applied.")
+            task("Payment", "Verify unmatched payment notice in QuickBooks", "Accounting")
 
     elif info["category"] == "tr1_request":
         ref = store.next_ref(db, "TR1")
@@ -170,9 +233,12 @@ def process_email(db, email, today=None):
                              "inspector": assign_inspector(info["sku"], proj["borough"]), "dob": info["dob"]})
         act("DOB/Forms", f"Prepared TR1 technical report {ref} for {proj['name']} "
                          f"(DOB job {info['dob'].get('job_no') or 'TBD'}).")
-        act("DOB/Forms", "Flagged for licensed review + manual signature. NOT auto-filed to DOB (human approval required).")
-        task("DOB/Forms", f"Review & sign TR1 {ref}, then file with DOB", "Dana Whitfield, PE")
-        result["artifacts"].append({"kind": "TR1 (draft — needs approval)", "ref": ref, "path": path})
+        apr = _queue_approval(db, result, "dob_filing", f"File TR1 {ref} with NYC DOB",
+                              {"tr1_ref": ref}, cust, security=sec)
+        act("DOB/Forms", f"Draft ready. Filing HELD for licensed PE sign-off — never auto-filed to "
+                         f"DOB ({apr['ref']}).")
+        task("DOB/Forms", f"Review & sign TR1 {ref}, then approve filing ({apr['ref']})", "Dana Whitfield, PE")
+        result["artifacts"].append({"kind": "TR1 (draft — filing needs approval)", "ref": ref, "path": path})
 
     else:  # question
         from .config import SERVICES

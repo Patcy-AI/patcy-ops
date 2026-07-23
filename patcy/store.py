@@ -10,7 +10,8 @@ import os
 DB_PATH = os.environ.get("PATCY_DB", os.path.join(os.path.dirname(__file__), "..", "patcy_db.json"))
 
 _EMPTY = {"projects": [], "proposals": [], "invoices": [], "tasks": [], "schedule": [], "log": [],
-          "counters": {"PRO": 140, "INV": 300, "TR1": 70, "PRJ": 20, "TASK": 0}}
+          "approvals": [],
+          "counters": {"PRO": 140, "INV": 300, "TR1": 70, "PRJ": 20, "TASK": 0, "APR": 0}}
 
 
 def load():

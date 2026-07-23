@@ -16,7 +16,7 @@ from patcy.pricing import money
 st.set_page_config(page_title="Patcy Ops — AI Operations Team", page_icon="🛠️", layout="wide")
 
 AGENT_ICON = {"Intake": "📥", "Proposal": "📄", "Scheduling": "📅", "Payment": "💳",
-              "DOB/Forms": "🏛️", "Follow-up": "🔔"}
+              "DOB/Forms": "🏛️", "Follow-up": "🔔", "Security": "🛡️", "Guardrail": "🔒"}
 
 
 def load_inbox():
@@ -65,12 +65,63 @@ if run:
 # ---- results ----
 if st.session_state.get("ran"):
     st.divider()
-    st.subheader("⚙️ What the team did")
     results = st.session_state.results
+    db_now = store.load()
+    approvals = db_now.get("approvals", [])
+    pending = [a for a in approvals if a["status"] == "pending"]
+    flagged = [r for r in results if r.get("security", {}).get("flagged")]
 
-    tabs = st.tabs(["Activity feed", "Documents", "Schedule", "Follow-ups", "Tasks"])
+    # Guardrail headline — security is a first-class part of the demo.
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Actions prepared", sum(len(r["actions"]) for r in results))
+    m2.metric("🔒 Held for approval", len(pending))
+    m3.metric("🛡️ Injection blocked", len(flagged))
 
+    st.subheader("⚙️ What the team did")
+    tabs = st.tabs(["🔒 Needs approval", "🛡️ Security", "Activity feed",
+                    "Documents", "Schedule", "Follow-ups", "Tasks"])
+
+    # --- Needs approval (human-in-the-loop) ---
     with tabs[0]:
+        st.caption("High-risk actions — money movement, DOB filings, high-value sends — are **held** "
+                   "here. Nothing irreversible runs without a human. _OWASP LLM06 Excessive Agency · "
+                   "NIST AI RMF human oversight · EU AI Act._")
+        if not approvals:
+            st.info("No high-risk actions in this batch.")
+        for a in approvals:
+            icon = {"pending": "⏳", "approved": "✅", "rejected": "🚫"}.get(a["status"], "•")
+            with st.container(border=True):
+                amt = f"  ·  {money(a['amount'])}" if a.get("amount") else ""
+                st.markdown(f"{icon} **{a['title']}**{amt}  —  _{a['status']}_")
+                if a.get("flagged"):
+                    st.warning("⚠ Originated from an email flagged for prompt injection — review carefully. "
+                               + a.get("flag_note", ""))
+                st.caption(f"**Why it's gated:** {a['reason']}")
+                st.caption(f"**Control:** {a['control']}")
+                st.caption(f"**Frameworks:** {a['frameworks']}")
+                if a["status"] == "pending":
+                    c1, c2, _ = st.columns([1, 1, 4])
+                    if c1.button("✅ Approve", key=f"ap{a['ref']}", use_container_width=True):
+                        ops.apply_approval(store.load(), a["ref"], "approve")
+                        st.rerun()
+                    if c2.button("🚫 Reject", key=f"rj{a['ref']}", use_container_width=True):
+                        ops.apply_approval(store.load(), a["ref"], "reject")
+                        st.rerun()
+
+    # --- Security (untrusted-inbox defense) ---
+    with tabs[1]:
+        st.caption("The inbox is **untrusted input**. Every message is scanned for prompt injection / "
+                   "authority-escalation before any action runs. _OWASP LLM01 Prompt Injection · LLM04._")
+        for r in results:
+            s = r.get("security", {})
+            if s.get("flagged"):
+                st.error(f"🚫 **{r['subject']}** — injection detected. {s['note']}")
+                st.caption("Matched signatures: `" + "`, `".join(s.get("hits", [])[:5]) + "`")
+            else:
+                st.markdown(f"✅ {r['subject']} — clean")
+
+    # --- Activity feed ---
+    with tabs[2]:
         for r in results:
             st.markdown(f"**{r['subject']}**  ·  _{r['category'].replace('_', ' ')}_")
             for a in r["actions"]:
@@ -80,7 +131,7 @@ if st.session_state.get("ran"):
                     st.code(r["draft_reply"], language="text")
             st.markdown("---")
 
-    with tabs[1]:
+    with tabs[3]:
         docs = [a for r in results for a in r["artifacts"] if a.get("path")]
         if not docs:
             st.info("No documents generated.")
@@ -96,7 +147,7 @@ if st.session_state.get("ran"):
                 except FileNotFoundError:
                     st.caption("(file not found)")
 
-    with tabs[2]:
+    with tabs[4]:
         sched = store.load()["schedule"]
         if not sched:
             st.info("Nothing scheduled.")
@@ -104,7 +155,7 @@ if st.session_state.get("ran"):
             st.markdown(f"📅 **{s['date']} {s['time']}** — {s['type']} inspection at *{s['project']}* → "
                         f"**{s['inspector']}**  ·  [Add to calendar]({s['link']})")
 
-    with tabs[3]:
+    with tabs[5]:
         fu = st.session_state.get("followups", [])
         if not fu:
             st.success("Nothing overdue.")
@@ -114,7 +165,7 @@ if st.session_state.get("ran"):
             with st.expander("Drafted reminder"):
                 st.code(f["draft"], language="text")
 
-    with tabs[4]:
+    with tabs[6]:
         tasks = store.load()["tasks"]
         if not tasks:
             st.info("No tasks.")
